@@ -634,13 +634,14 @@ impl LiveRangeSet {
 
 #[derive(Clone, Debug)]
 pub struct InsertedMove {
-    pub pos_prio: PosWithPrio,
+    pub pos: ProgPoint,
     pub from_alloc: Allocation,
     pub to_alloc: Allocation,
     pub to_vreg: VReg,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum InsertMovePrio {
     InEdgeMoves,
     Regular,
@@ -648,11 +649,27 @@ pub enum InsertMovePrio {
     MultiFixedRegSecondary,
     ReusedInput,
     OutEdgeMoves,
+
+    /// The number of priorities, used to determine the length of the Env::inserted_moves array.
+    Count,
+}
+
+impl InsertMovePrio {
+    pub fn all() -> &'static [InsertMovePrio] {
+        &[
+            InsertMovePrio::InEdgeMoves,
+            InsertMovePrio::Regular,
+            InsertMovePrio::MultiFixedRegInitial,
+            InsertMovePrio::MultiFixedRegSecondary,
+            InsertMovePrio::ReusedInput,
+            InsertMovePrio::OutEdgeMoves,
+        ]
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct InsertedMoves {
-    pub moves: Vec<InsertedMove>,
+    pub moves: [Vec<InsertedMove>; InsertMovePrio::Count as usize],
 }
 
 impl InsertedMoves {
@@ -682,11 +699,8 @@ impl InsertedMoves {
         if let Some(to) = to_alloc.as_reg() {
             debug_assert_eq!(to.class(), to_vreg.class());
         }
-        self.moves.push(InsertedMove {
-            pos_prio: PosWithPrio {
-                pos,
-                prio: prio as u32,
-            },
+        self.moves[prio as usize].push(InsertedMove {
+            pos,
             from_alloc,
             to_alloc,
             to_vreg,
