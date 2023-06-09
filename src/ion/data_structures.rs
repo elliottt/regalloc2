@@ -319,6 +319,9 @@ pub struct VRegData {
     pub is_ref: bool,
     // We don't initially know the RegClass until we observe a use of the VReg.
     pub class: Option<RegClass>,
+
+    // The authoritative definition point for this VReg.
+    pub def: ProgPoint,
 }
 
 #[derive(Clone, Debug)]

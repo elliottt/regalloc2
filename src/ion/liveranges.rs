@@ -130,6 +130,9 @@ impl<'a, F: Function> Env<'a, F> {
                     is_ref: false,
                     // We'll learn the RegClass as we scan the code.
                     class: None,
+
+                    // We'll update the definition location when building liveranges.
+                    def: ProgPoint::before(Inst::invalid()),
                 },
             );
         }
@@ -653,27 +656,36 @@ impl<'a, F: Function> Env<'a, F> {
                                 }
                                 // Create the use in the LiveRange.
                                 self.insert_use_into_liverange(lr, Use::new(operand, pos, i as u8));
-                                // If def (not mod), this reg is now dead,
-                                // scanning backward; make it so.
-                                if operand.kind() == OperandKind::Def {
-                                    // Trim the range for this vreg to start
-                                    // at `pos` if it previously ended at the
-                                    // start of this block (i.e. was not
-                                    // merged into some larger LiveRange due
-                                    // to out-of-order blocks).
-                                    if self.ranges[lr].range.from
-                                        == self.cfginfo.block_entry[block.index()]
-                                    {
-                                        trace!(" -> started at block start; trimming to {:?}", pos);
-                                        self.ranges[lr].range.from = pos;
-                                    }
 
-                                    self.ranges[lr].set_flag(LiveRangeFlag::StartsAtDef);
+                                // This reg is now dead, scanning backward; make it so.
 
-                                    // Remove from live-set.
-                                    live.set(operand.vreg().vreg(), false);
-                                    vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
+                                // Trim the range for this vreg to start
+                                // at `pos` if it previously ended at the
+                                // start of this block (i.e. was not
+                                // merged into some larger LiveRange due
+                                // to out-of-order blocks).
+                                if self.ranges[lr].range.from
+                                    == self.cfginfo.block_entry[block.index()]
+                                {
+                                    trace!(" -> started at block start; trimming to {:?}", pos);
+                                    self.ranges[lr].range.from = pos;
                                 }
+
+                                // Update the canonical definition point for the vreg.
+                                // NOTE: there will only ever be one definition point, as we
+                                // only accept SSA input.
+                                assert!(
+                                    self.vregs[operand.vreg()].def.inst().is_invalid(),
+                                    "Multiple definitions found for {}",
+                                    operand.vreg()
+                                );
+                                self.vregs[operand.vreg()].def = pos;
+
+                                self.ranges[lr].set_flag(LiveRangeFlag::StartsAtDef);
+
+                                // Remove from live-set.
+                                live.set(operand.vreg().vreg(), false);
+                                vreg_ranges[operand.vreg().vreg()] = LiveRangeIndex::invalid();
                             }
                             OperandKind::Use => {
                                 // Create/extend the LiveRange if it
@@ -759,14 +771,34 @@ impl<'a, F: Function> Env<'a, F> {
 
         for vreg in &mut self.vregs {
             vreg.ranges.reverse();
-            let mut last = None;
-            for entry in &mut vreg.ranges {
-                // Ranges may have been truncated above at defs. We
-                // need to update with the final range here.
-                entry.range = self.ranges[entry.index].range;
-                // Assert in-order and non-overlapping.
-                debug_assert!(last.is_none() || last.unwrap() <= entry.range.from);
-                last = Some(entry.range.to);
+
+            if let Some((front, rest)) = vreg.ranges.split_first_mut() {
+                // Non-blockparam vregs must have ranges that start with a def.
+                let range = &self.ranges[front.index];
+                assert!(
+                    vreg.blockparam.is_valid() || range.has_flag(LiveRangeFlag::StartsAtDef),
+                    "VReg ranges for {:?} do not start with a def",
+                    range.vreg,
+                );
+                front.range = range.range;
+
+                // All remaining ranges must not include a def.
+                let mut last = front.range.to;
+                for entry in rest {
+                    let range = &self.ranges[entry.index];
+                    assert!(
+                        !range.has_flag(LiveRangeFlag::StartsAtDef),
+                        "VReg ranges for {:?} include a def in the middle",
+                        range.vreg,
+                    );
+
+                    // Ranges may have been truncated above at defs. We
+                    // need to update with the final range here.
+                    entry.range = range.range;
+                    // Assert in-order and non-overlapping.
+                    debug_assert!(last <= entry.range.from);
+                    last = entry.range.to;
+                }
             }
         }
 
