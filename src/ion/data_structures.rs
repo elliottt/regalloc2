@@ -129,6 +129,7 @@ pub struct LiveRange {
 #[repr(u32)]
 pub enum LiveRangeFlag {
     StartsAtDef = 1,
+    Spilled = 2,
 }
 
 impl LiveRange {

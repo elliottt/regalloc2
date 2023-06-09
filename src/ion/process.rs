@@ -600,6 +600,7 @@ impl<'a, F: Function> Env<'a, F> {
                         spill
                     );
                     self.bundles[spill].ranges.push(entry);
+                    self.ranges[entry.index].set_flag(LiveRangeFlag::Spilled);
                     self.bundles[bundle].ranges.pop();
                     self.ranges[entry.index].bundle = spill;
                     continue;
@@ -624,6 +625,7 @@ impl<'a, F: Function> Env<'a, F> {
                         index: empty_lr,
                     });
                     self.ranges[empty_lr].bundle = spill;
+                    self.ranges[empty_lr].set_flag(LiveRangeFlag::Spilled);
                     self.vregs[vreg].ranges.push(LiveRangeListEntry {
                         range,
                         index: empty_lr,
@@ -662,6 +664,7 @@ impl<'a, F: Function> Env<'a, F> {
                     self.bundles[spill].ranges.push(entry);
                     self.bundles[new_bundle].ranges.drain(..1);
                     self.ranges[entry.index].bundle = spill;
+                    self.ranges[entry.index].set_flag(LiveRangeFlag::Spilled);
                     continue;
                 }
                 let first_use = first_use.unwrap();
@@ -689,6 +692,7 @@ impl<'a, F: Function> Env<'a, F> {
                         index: empty_lr,
                     });
                     self.ranges[empty_lr].bundle = spill;
+                    self.ranges[empty_lr].set_flag(LiveRangeFlag::Spilled);
                     self.vregs[vreg].ranges.push(LiveRangeListEntry {
                         range,
                         index: empty_lr,
@@ -916,6 +920,7 @@ impl<'a, F: Function> Env<'a, F> {
                 self.ranges[spill_lr].uses.extend(spill_uses.drain(..));
                 new_lrs.push((vreg, spill_lr));
 
+                self.ranges[spill_lr].set_flag(LiveRangeFlag::Spilled);
                 if spill_starts_def {
                     self.ranges[spill_lr].set_flag(LiveRangeFlag::StartsAtDef);
                 }
@@ -1013,6 +1018,7 @@ impl<'a, F: Function> Env<'a, F> {
                         core::mem::replace(&mut self.bundles[bundle].ranges, smallvec![]);
                     for entry in &list {
                         self.ranges[entry.index].bundle = spill;
+                        self.ranges[entry.index].set_flag(LiveRangeFlag::Spilled);
                     }
                     self.bundles[spill].ranges.extend(list.drain(..));
                     return Ok(());
