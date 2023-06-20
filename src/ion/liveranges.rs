@@ -675,7 +675,8 @@ impl<'a, F: Function> Env<'a, F> {
                                 // NOTE: there will only ever be one definition point, as we
                                 // only accept SSA input.
                                 assert!(
-                                    self.vregs[operand.vreg()].def.inst().is_invalid(),
+                                    self.vregs[operand.vreg()].blockparam.is_invalid()
+                                        && self.vregs[operand.vreg()].def.inst().is_invalid(),
                                     "Multiple definitions found for {}",
                                     operand.vreg()
                                 );
@@ -704,6 +705,12 @@ impl<'a, F: Function> Env<'a, F> {
                                     vreg_ranges[operand.vreg().vreg()] = lr;
                                 }
                                 debug_assert!(lr.is_valid());
+
+                                assert!(
+                                    self.vregs[operand.vreg()].def.inst().is_invalid(),
+                                    "Use found before def of {}!",
+                                    operand.vreg()
+                                );
 
                                 trace!("Use of {:?} at {:?} -> {:?}", operand, pos, lr,);
 
@@ -771,34 +778,14 @@ impl<'a, F: Function> Env<'a, F> {
 
         for vreg in &mut self.vregs {
             vreg.ranges.reverse();
-
-            if let Some((front, rest)) = vreg.ranges.split_first_mut() {
-                // Non-blockparam vregs must have ranges that start with a def.
-                let range = &self.ranges[front.index];
-                assert!(
-                    vreg.blockparam.is_valid() || range.has_flag(LiveRangeFlag::StartsAtDef),
-                    "VReg ranges for {:?} do not start with a def",
-                    range.vreg,
-                );
-                front.range = range.range;
-
-                // All remaining ranges must not include a def.
-                let mut last = front.range.to;
-                for entry in rest {
-                    let range = &self.ranges[entry.index];
-                    assert!(
-                        !range.has_flag(LiveRangeFlag::StartsAtDef),
-                        "VReg ranges for {:?} include a def in the middle",
-                        range.vreg,
-                    );
-
-                    // Ranges may have been truncated above at defs. We
-                    // need to update with the final range here.
-                    entry.range = range.range;
-                    // Assert in-order and non-overlapping.
-                    debug_assert!(last <= entry.range.from);
-                    last = entry.range.to;
-                }
+            let mut last = None;
+            for entry in &mut vreg.ranges {
+                // Ranges may have been truncated above at defs. We
+                // need to update with the final range here.
+                entry.range = self.ranges[entry.index].range;
+                // Assert in-order and non-overlapping.
+                debug_assert!(last.is_none() || last.unwrap() <= entry.range.from);
+                last = Some(entry.range.to);
             }
         }
 
