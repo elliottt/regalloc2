@@ -172,6 +172,25 @@ impl LiveRange {
         self.uses_spill_weight_and_flags =
             (self.uses_spill_weight_and_flags & 0xe000_0000) | weight_bits;
     }
+
+    /// Merge uses into the use list of this [LiveRange].
+    pub fn merge_uses<I: Iterator<Item=Use>>(&mut self, new_uses: I) {
+        let mut old_uses = core::mem::take(&mut self.uses).into_iter().peekable();
+        let mut new_uses = new_uses.peekable();
+
+        // TODO: use size_hint to pre-allocate self.uses
+
+        while old_uses.peek().is_some() && new_uses.peek().is_some() {
+            if old_uses.peek().unwrap().pos < new_uses.peek().unwrap().pos {
+                self.uses.push(old_uses.next().unwrap());
+            } else {
+                self.uses.push(new_uses.next().unwrap());
+            }
+        }
+
+        self.uses.extend(old_uses);
+        self.uses.extend(new_uses);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
