@@ -374,17 +374,16 @@ impl<'a, F: Function> Env<'a, F> {
         &mut self,
         bundle: LiveBundleIndex,
         create_if_absent: bool,
-    ) -> Option<LiveBundleIndex> {
+    ) -> Option<LiveRangeIndex> {
         let ssidx = self.bundles[bundle].spillset;
-        let idx = self.spillsets[ssidx].spill_bundle;
-        if idx.is_valid() {
-            Some(idx)
+        let spillset = &mut self.spillsets[ssidx];
+        if let Some(range) = spillset.get_spill_range() {
+            Some(range)
         } else if create_if_absent {
-            let idx = self.bundles.add();
-            self.spillsets[ssidx].spill_bundle = idx;
-            self.bundles[idx].spillset = ssidx;
-            self.spilled_bundles.push(idx);
-            Some(idx)
+            let (range, bundle) =
+                spillset.create_spill_range(ssidx, &mut self.ranges, &mut self.bundles);
+            self.spilled_bundles.push(bundle);
+            Some(range)
         } else {
             None
         }

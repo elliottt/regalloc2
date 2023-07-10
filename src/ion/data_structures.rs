@@ -298,7 +298,6 @@ pub struct SpillSet {
     pub slot: SpillSlotIndex,
     pub reg_hint: PReg,
     pub class: RegClass,
-    pub spill_bundle: LiveBundleIndex,
     pub required: bool,
     pub size: u8,
     pub splits: u8,
@@ -308,6 +307,59 @@ pub struct SpillSet {
     /// bundles with lots of open space this abstraction is pessimistic, but when bundles are small
     /// or dense this yields similar results to tracking individual live ranges.
     pub range: CodeRange,
+
+    /// The live range that holds all spilled uses for this spillset. The range of this live range
+    /// will match the range field above.
+    pub spill_range: LiveRangeIndex,
+
+    spill_bundle: LiveBundleIndex,
+}
+
+impl SpillSet {
+    pub fn new(size: u8, class: RegClass, range: CodeRange) -> Self {
+        Self {
+            slot: SpillSlotIndex::invalid(),
+            size,
+            required: false,
+            class,
+            reg_hint: PReg::invalid(),
+            spill_bundle: LiveBundleIndex::invalid(),
+            spill_range: LiveRangeIndex::invalid(),
+            splits: 0,
+            range,
+        }
+    }
+
+    pub fn get_spill_range(&self) -> Option<LiveRangeIndex> {
+        if self.spill_range.is_valid() {
+            debug_assert!(self.spill_bundle.is_valid());
+            Some(self.spill_range)
+        } else {
+            None
+        }
+    }
+
+    pub fn create_spill_range(
+        &mut self,
+        self_idx: SpillSetIndex,
+        ranges: &mut LiveRanges,
+        bundles: &mut LiveBundles,
+    ) -> (LiveRangeIndex, LiveBundleIndex) {
+        debug_assert!(!self.spill_range.is_valid());
+        debug_assert!(!self.spill_bundle.is_valid());
+
+        self.spill_range = ranges.add(self.range);
+
+        self.spill_bundle = bundles.add();
+        let bundle = &mut bundles[self.spill_bundle];
+        bundle.ranges.push(LiveRangeListEntry {
+            range: self.range,
+            index: self.spill_range,
+        });
+        bundle.spillset = self_idx;
+
+        (self.spill_range, self.spill_bundle)
+    }
 }
 
 pub(crate) const MAX_SPLITS_PER_SPILLSET: u8 = 2;

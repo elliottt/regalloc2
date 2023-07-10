@@ -12,7 +12,7 @@
 
 //! Bundle merging.
 
-use super::{Env, LiveBundleIndex, SpillSet, SpillSlotIndex, VRegIndex};
+use super::{Env, LiveBundleIndex, SpillSet, VRegIndex};
 use crate::{
     ion::data_structures::BlockparamOut, Function, Inst, OperandConstraint, OperandKind, PReg,
 };
@@ -278,16 +278,7 @@ impl<'a, F: Function> Env<'a, F> {
             // Create a spillslot for this bundle.
             let reg = self.vreg(vreg);
             let size = self.func.spillslot_size(reg.class()) as u8;
-            let ssidx = self.spillsets.push(SpillSet {
-                slot: SpillSlotIndex::invalid(),
-                size,
-                required: false,
-                class: reg.class(),
-                reg_hint: PReg::invalid(),
-                spill_bundle: LiveBundleIndex::invalid(),
-                splits: 0,
-                range,
-            });
+            let ssidx = self.spillsets.push(SpillSet::new(size, reg.class(), range));
             self.bundles[bundle].spillset = ssidx;
         }
 
