@@ -598,6 +598,7 @@ impl<'a, F: Function> Env<'a, F> {
                         spill
                     );
                     self.bundles[bundle].ranges.pop();
+                    self.ranges[entry.index].set_flag(LiveRangeFlag::Tombstoned);
                     continue;
                 }
                 let last_use = last_use.unwrap();
@@ -638,6 +639,7 @@ impl<'a, F: Function> Env<'a, F> {
                         spill
                     );
                     self.bundles[new_bundle].ranges.drain(..1);
+                    self.ranges[entry.index].set_flag(LiveRangeFlag::Tombstoned);
                     continue;
                 }
                 let first_use = first_use.unwrap();

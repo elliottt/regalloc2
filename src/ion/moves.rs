@@ -95,45 +95,9 @@ impl<'a, F: Function> Env<'a, F> {
             for entry in &mut vreg.ranges {
                 entry.range = self.ranges[entry.index].range;
             }
+            let ranges = &self.ranges;
+            vreg.ranges.retain(|entry| !ranges[entry.index].has_flag(LiveRangeFlag::Tombstoned));
             vreg.ranges.sort_unstable_by_key(|entry| entry.range.from);
-        }
-
-        let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
-
-        // Apply all allocations to spillset ranges.
-        for sset in 0..self.spillsets.len() {
-            let sset = SpillSetIndex::new(sset);
-            trace!("spill set: {:?}", self.spillsets[sset]);
-            let alloc = self.get_spillset_alloc(sset);
-            if alloc.is_none() {
-                continue;
-            }
-
-            let spill = self.spillsets[sset].spill_range;
-            if spill.is_invalid() {
-                continue;
-            }
-
-            trace!(" -> applying spill allocation to range {:?}", spill);
-            trace!("  -> code range: {:?}", self.ranges[spill].range);
-
-            // Scan over def/uses and apply allocations.
-            for use_idx in 0..self.ranges[spill].uses.len() {
-                let usedata = self.ranges[spill].uses[use_idx];
-                trace!("applying to use: {:?}", usedata);
-                // debug_assert!(range.contains_point(usedata.pos));
-                let inst = usedata.pos.inst();
-                let slot = usedata.slot;
-                let operand = usedata.operand;
-                // Safepoints add virtual uses with no slots;
-                // avoid these.
-                if slot != SLOT_NONE {
-                    self.set_alloc(inst, slot as usize, alloc);
-                }
-                if let OperandConstraint::Reuse(_) = operand.constraint() {
-                    reuse_input_insts.push(inst);
-                }
-            }
         }
 
         /// Buffered information about the previous liverange that was processed.
@@ -319,6 +283,51 @@ impl<'a, F: Function> Env<'a, F> {
         let mut block_param_dests = Vec::with_capacity(3 * self.func.num_insts());
 
         let debug_labels = self.func.debug_value_labels();
+
+        let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
+
+        // Apply all allocations to spillset ranges.
+        let mut vregs = crate::FxHashSet::default();
+        for sset in 0..self.spillsets.len() {
+            let sset = SpillSetIndex::new(sset);
+            trace!("spill set: {:?}", self.spillsets[sset]);
+            let alloc = self.get_spillset_alloc(sset);
+            if alloc.is_none() {
+                continue;
+            }
+
+            let spill = self.spillsets[sset].spill_range;
+            if spill.is_invalid() {
+                continue;
+            }
+
+            trace!(" -> applying spill allocation to range {:?}", spill);
+            trace!("  -> code range: {:?}", self.ranges[spill].range);
+
+            // Scan over def/uses and apply allocations.
+            for use_idx in 0..self.ranges[spill].uses.len() {
+                let usedata = self.ranges[spill].uses[use_idx];
+                trace!("applying to use: {:?}", usedata);
+                // debug_assert!(range.contains_point(usedata.pos));
+                let inst = usedata.pos.inst();
+                let slot = usedata.slot;
+                let operand = usedata.operand;
+                // Safepoints add virtual uses with no slots;
+                // avoid these.
+                if slot != SLOT_NONE {
+                    self.set_alloc(inst, slot as usize, alloc);
+                    vregs.insert(operand.vreg());
+                }
+                if let OperandConstraint::Reuse(_) = operand.constraint() {
+                    reuse_input_insts.push(inst);
+                }
+            }
+
+            // TODO: Seed block_param_sources with vregs we see
+            let mut vregs: Vec<_> = vregs.drain().collect();
+            vregs.sort();
+        }
+
 
         let mut blockparam_in_idx = 0;
         let mut blockparam_out_idx = 0;
