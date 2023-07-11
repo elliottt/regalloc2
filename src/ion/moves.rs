@@ -18,7 +18,7 @@ use super::{
 };
 use crate::ion::data_structures::{
     u64_key, BlockparamIn, BlockparamOut, CodeRange, Edits, FixedRegFixupLevel, LiveRangeKey,
-    LiveRangeListEntry,
+    LiveRangeListEntry, SpillSetIndex,
 };
 use crate::ion::reg_traversal::RegTraversalIter;
 use crate::moves::{MoveAndScratchResolver, ParallelMoves};
@@ -51,6 +51,24 @@ impl<'a, F: Function> Env<'a, F> {
         inst_allocs[slot] = alloc;
     }
 
+    pub fn get_spillset_alloc(&self, ssidx: SpillSetIndex) -> Allocation {
+        trace!("get_spillset_alloc: {:?}", ssidx);
+
+        let bundle = self.spillsets[ssidx].get_spill_bundle();
+        let mut alloc = Allocation::none();
+
+        if self.spillsets[ssidx].required {
+            let slot = self.spillsets[ssidx].slot;
+            assert!(slot.is_valid());
+            alloc = self.spillslots[slot.index()].alloc;
+        } else if bundle.is_valid() {
+            alloc = self.bundles[bundle].allocation;
+        }
+
+        trace!(" -> allocation: {:?}", alloc);
+        alloc
+    }
+
     pub fn get_alloc_for_range(&self, range: LiveRangeIndex) -> Allocation {
         trace!("get_alloc_for_range: {:?}", range);
         let bundle = self.ranges[range].bundle;
@@ -60,12 +78,7 @@ impl<'a, F: Function> Env<'a, F> {
         if bundledata.allocation != Allocation::none() {
             bundledata.allocation
         } else {
-            trace!(" -> spillset {:?}", bundledata.spillset);
-            trace!(
-                " -> spill slot {:?}",
-                self.spillsets[bundledata.spillset].slot
-            );
-            self.spillslots[self.spillsets[bundledata.spillset].slot.index()].alloc
+            self.get_spillset_alloc(bundledata.spillset)
         }
     }
 
@@ -83,6 +96,44 @@ impl<'a, F: Function> Env<'a, F> {
                 entry.range = self.ranges[entry.index].range;
             }
             vreg.ranges.sort_unstable_by_key(|entry| entry.range.from);
+        }
+
+        let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
+
+        // Apply all allocations to spillset ranges.
+        for sset in 0..self.spillsets.len() {
+            let sset = SpillSetIndex::new(sset);
+            trace!("spill set: {:?}", self.spillsets[sset]);
+            let alloc = self.get_spillset_alloc(sset);
+            if alloc.is_none() {
+                continue;
+            }
+
+            let spill = self.spillsets[sset].spill_range;
+            if spill.is_invalid() {
+                continue;
+            }
+
+            trace!(" -> applying spill allocation to range {:?}", spill);
+            trace!("  -> code range: {:?}", self.ranges[spill].range);
+
+            // Scan over def/uses and apply allocations.
+            for use_idx in 0..self.ranges[spill].uses.len() {
+                let usedata = self.ranges[spill].uses[use_idx];
+                trace!("applying to use: {:?}", usedata);
+                // debug_assert!(range.contains_point(usedata.pos));
+                let inst = usedata.pos.inst();
+                let slot = usedata.slot;
+                let operand = usedata.operand;
+                // Safepoints add virtual uses with no slots;
+                // avoid these.
+                if slot != SLOT_NONE {
+                    self.set_alloc(inst, slot as usize, alloc);
+                }
+                if let OperandConstraint::Reuse(_) = operand.constraint() {
+                    reuse_input_insts.push(inst);
+                }
+            }
         }
 
         /// Buffered information about the previous liverange that was processed.
@@ -269,8 +320,6 @@ impl<'a, F: Function> Env<'a, F> {
 
         let debug_labels = self.func.debug_value_labels();
 
-        let mut reuse_input_insts = Vec::with_capacity(self.func.num_insts() / 2);
-
         let mut blockparam_in_idx = 0;
         let mut blockparam_out_idx = 0;
         for vreg in 0..self.vregs.len() {
@@ -299,6 +348,7 @@ impl<'a, F: Function> Env<'a, F> {
                 );
                 debug_assert!(alloc != Allocation::none());
 
+                // Determine the spill location for this range
                 if self.annotations_enabled {
                     self.annotate(
                         range.from,
@@ -322,6 +372,12 @@ impl<'a, F: Function> Env<'a, F> {
                     );
                 }
 
+                let spill_alloc = {
+                    let bundle = self.ranges[entry.index].bundle;
+                    let ssidx = self.bundles[bundle].spillset;
+                    self.get_spillset_alloc(ssidx)
+                };
+
                 prev.advance(entry);
 
                 // Does this range follow immediately after a prior
@@ -344,30 +400,45 @@ impl<'a, F: Function> Env<'a, F> {
                 // can't insert a move that logically happens just
                 // before After (i.e. in the middle of a single
                 // instruction).
-                if let Some(prev) = prev.is_valid() {
-                    let prev_alloc = self.get_alloc_for_range(prev.index);
-                    debug_assert!(prev_alloc != Allocation::none());
+                if !self.ranges[entry.index].has_flag(LiveRangeFlag::StartsAtDef) {
+                    let mut moved = false;
+                    if let Some(prev) = prev.is_valid() {
+                        let prev_alloc = self.get_alloc_for_range(prev.index);
+                        debug_assert!(prev_alloc != Allocation::none());
 
-                    if prev.range.to >= range.from
-                        && (prev.range.to > range.from || !self.is_start_of_block(range.from))
-                        && !self.ranges[entry.index].has_flag(LiveRangeFlag::StartsAtDef)
-                    {
-                        trace!(
-                            "prev LR {} abuts LR {} in same block; moving {} -> {} for v{}",
-                            prev.index.index(),
-                            entry.index.index(),
-                            prev_alloc,
-                            alloc,
-                            vreg.index()
-                        );
-                        debug_assert_eq!(range.from.pos(), InstPosition::Before);
-                        inserted_moves.push(
-                            range.from,
-                            InsertMovePrio::Regular,
-                            prev_alloc,
-                            alloc,
-                            self.vreg(vreg),
-                        );
+                        if prev.range.to >= range.from
+                            && (prev.range.to > range.from || !self.is_start_of_block(range.from))
+                        {
+                            trace!(
+                                "prev LR {} abuts LR {} in same block; moving {} -> {} for v{}",
+                                prev.index.index(),
+                                entry.index.index(),
+                                prev_alloc,
+                                alloc,
+                                vreg.index()
+                            );
+                            debug_assert_eq!(range.from.pos(), InstPosition::Before);
+                            moved = true;
+                            inserted_moves.push(
+                                range.from,
+                                InsertMovePrio::Regular,
+                                prev_alloc,
+                                alloc,
+                                self.vreg(vreg),
+                            );
+                        }
+                    }
+
+                    if !moved {
+                        if spill_alloc.is_some() {
+                            inserted_moves.push(
+                                range.from,
+                                InsertMovePrio::Regular,
+                                spill_alloc,
+                                alloc,
+                                self.vreg(vreg),
+                            );
+                        }
                     }
                 }
 
@@ -570,6 +641,20 @@ impl<'a, F: Function> Env<'a, F> {
                     }
                     if let OperandConstraint::Reuse(_) = operand.constraint() {
                         reuse_input_insts.push(inst);
+                    }
+
+                    // If this is a def and the bundle this range belongs to has spilled, emit a
+                    // move to the spill location.
+                    if operand.kind() == OperandKind::Def {
+                        if spill_alloc.is_some() {
+                            inserted_moves.push(
+                                ProgPoint::after(inst),
+                                InsertMovePrio::Regular,
+                                alloc,
+                                spill_alloc,
+                                self.vreg(vreg),
+                            );
+                        }
                     }
                 }
 

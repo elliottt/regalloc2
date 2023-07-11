@@ -358,6 +358,10 @@ impl SpillSet {
         }
     }
 
+    pub fn get_spill_bundle(&self) -> LiveBundleIndex {
+        self.spill_bundle
+    }
+
     pub fn create_spill_range(
         &mut self,
         self_idx: SpillSetIndex,
@@ -368,8 +372,10 @@ impl SpillSet {
         debug_assert!(!self.spill_bundle.is_valid());
 
         self.spill_range = ranges.add(self.range);
-
         self.spill_bundle = bundles.add();
+
+        ranges[self.spill_range].bundle = self.spill_bundle;
+
         let bundle = &mut bundles[self.spill_bundle];
         bundle.ranges.push(LiveRangeListEntry {
             range: self.range,
